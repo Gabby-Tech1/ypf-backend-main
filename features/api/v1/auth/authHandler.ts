@@ -1,12 +1,17 @@
 import * as authService from "@/shared/services/authService";
 import * as constituentsService from "@/shared/services/constituentsService";
+import * as mediaService from "@/shared/services/mediaService";
+import * as preferencesService from "@/shared/services/preferencesService";
+import * as mediaUtils from "@/shared/utils/files";
 import { encodeData } from "@/shared/utils/jwt";
-import { ApiResponse, ApiError } from "@/shared/types";
+import { ApiResponse, ApiError, AuthenticatedUser } from "@/shared/types";
 import { sendOtpEmail } from "@/shared/utils/email";
 import {
   ForgotPasswordSchema,
   ResetPasswordSchema,
   OnboardSchema,
+  UpdateMeSchema,
+  ChangePasswordSchema,
 } from "./schemas";
 import { AuthData } from "./dtos";
 import { z } from "zod";
@@ -74,7 +79,7 @@ export async function forgotPassword({
 }: z.infer<typeof ForgotPasswordSchema>): Promise<ApiResponse<null>> {
   const otp = await authService.forgotPassword(email);
 
-  await sendOtpEmail(email, otp);
+  await sendOtpEmail(email, otp, "password_reset");
 
   return {
     success: true,
@@ -95,12 +100,35 @@ export async function onboard({
 }: z.infer<typeof OnboardSchema>): Promise<ApiResponse<null>> {
   const { otp, email } = await authService.onboardUser(user);
 
-  await sendOtpEmail(email, otp);
+  await sendOtpEmail(email, otp, "onboarding");
 
   return {
     success: true,
     data: null,
     message: "Onboarding verification code sent to your email",
+  };
+}
+
+/**
+ * Checks the onboarding status of a user by their public ID.
+ *
+ * @param publicId - The constituent's public ID
+ * @returns Eligibility status and masked email if eligible
+ * @throws ApiError if user not found
+ */
+export async function checkOnboardStatus(
+  publicId: string,
+): Promise<
+  ApiResponse<{ eligible: boolean; maskedEmail?: string; reason?: string }>
+> {
+  const status = await authService.checkOnboardStatus(publicId);
+
+  return {
+    success: true,
+    data: status,
+    message: status.eligible
+      ? "User is eligible for onboarding"
+      : "User is already onboarded",
   };
 }
 
@@ -162,6 +190,117 @@ export async function logout(): Promise<{
       data: null,
       message: "User successfully logged out",
     },
+  };
+}
+
+/**
+ * Retrieves the currently authenticated user's profile detail.
+ *
+ * @param authenticatedUser - The authenticated user object from the request
+ * @returns Response with detailed user profile
+ * @throws ApiError if user detail retrieval fails
+ */
+export async function getMe(
+  authenticatedUser: AuthenticatedUser,
+): Promise<ApiResponse<AuthData>> {
+  const constituentDetail = await constituentsService.getDetailedConstituent(
+    authenticatedUser.constituentId,
+  );
+
+  if (!constituentDetail) {
+    throw new ApiError("Failed to retrieve user profile.", 404);
+  }
+
+  const authData: AuthData = {
+    ...constituentDetail,
+    auth: authenticatedUser,
+  };
+
+  return {
+    success: true,
+    data: authData,
+    message: "User profile retrieved successfully.",
+  };
+}
+
+export async function updateMe(
+  authenticatedUser: AuthenticatedUser,
+  updates: z.infer<typeof UpdateMeSchema>,
+): Promise<ApiResponse<AuthData>> {
+  await constituentsService.updateConstituent(
+    authenticatedUser.constituentId,
+    updates,
+  );
+
+  return getMe(authenticatedUser);
+}
+
+export async function uploadProfilePhoto(
+  authenticatedUser: AuthenticatedUser,
+  file: Express.Multer.File,
+): Promise<ApiResponse<AuthData>> {
+  const uploadMeta = await mediaUtils.storeMediumFile(file);
+
+  try {
+    const medium = await mediaService.uploadMedium({
+      ...uploadMeta,
+      uploadedBy: authenticatedUser.constituentId,
+    });
+
+    await constituentsService.updateConstituentProfilePhoto(
+      authenticatedUser.constituentId,
+      medium.id,
+    );
+
+    return getMe(authenticatedUser);
+  } catch (error) {
+    await mediaUtils.deleteMediumFile(uploadMeta.externalId);
+    throw error;
+  }
+}
+
+export async function changePassword(
+  authenticatedUser: AuthenticatedUser,
+  body: z.infer<typeof ChangePasswordSchema>,
+): Promise<ApiResponse<null>> {
+  await authService.changePassword(
+    authenticatedUser.id,
+    body.currentPassword,
+    body.newPassword,
+  );
+
+  return {
+    success: true,
+    data: null,
+    message: "Password updated successfully.",
+  };
+}
+
+export async function getPreferences(
+  authenticatedUser: AuthenticatedUser,
+): Promise<ApiResponse<preferencesService.UserPreferencesData>> {
+  const prefs = await preferencesService.getPreferences(authenticatedUser.id);
+
+  return {
+    success: true,
+    data: prefs,
+    message: "Preferences retrieved.",
+  };
+}
+
+export async function updatePreferences(
+  authenticatedUser: AuthenticatedUser,
+  body: Partial<preferencesService.UserPreferencesData>,
+): Promise<ApiResponse<preferencesService.UserPreferencesData>> {
+  const prefs = await preferencesService.updatePreferences(
+    authenticatedUser.id,
+    body,
+  );
+
+  return {
+    success: true,
+    data: prefs,
+    message: "Preferences updated.",
   };
 }
 
