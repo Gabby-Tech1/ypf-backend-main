@@ -62,12 +62,13 @@ export async function fetchProjects(
         scheduledStart: Projects.scheduledStart,
         scheduledEnd: Projects.scheduledEnd,
         status: Projects.status,
-        featuredMediumExternalId: Media.externalId,
+        budget: Projects.budget,
+        targetVolunteers: Projects.targetVolunteers,
+        // Use min() so multiple isFeatured rows (gallery bug) never produce
+        // duplicate project rows — one project always = one result row.
+        featuredMediumExternalId: sql<string | null>`min(${Media.externalId})`,
         chapterName: Chapters.name,
-        // Count active enrollments (excludes unenrolled). count(*) over a LEFT
-        // JOIN would always be >= 1; counting the joined id gives 0 when
-        // there are no matches.
-        enrollmentCount: sql<number>`count(${ProjectEnrollments.id})::int`,
+        enrollmentCount: sql<number>`count(distinct ${ProjectEnrollments.id})::int`,
       })
       .from(Projects)
       .leftJoin(Chapters, eq(Projects.chapterId, Chapters.id))
@@ -101,7 +102,8 @@ export async function fetchProjects(
         Projects.scheduledStart,
         Projects.scheduledEnd,
         Projects.status,
-        Media.externalId,
+        Projects.budget,
+        Projects.targetVolunteers,
         Chapters.name,
         Chapters.id,
       ),
@@ -131,6 +133,8 @@ export async function fetchProjects(
       : undefined,
     enrollmentCount: Number(project.enrollmentCount ?? 0),
     chapterName: project.chapterName || undefined,
+    budget: project.budget != null ? Number(project.budget) : undefined,
+    targetVolunteers: project.targetVolunteers ?? undefined,
   }));
 
   return {
@@ -220,6 +224,8 @@ export async function fetchProjectById(
       scheduledStart: Projects.scheduledStart,
       scheduledEnd: Projects.scheduledEnd,
       status: Projects.status,
+      budget: Projects.budget,
+      targetVolunteers: Projects.targetVolunteers,
       chapterId: Chapters.id,
       chapterName: Chapters.name,
     })
@@ -299,6 +305,8 @@ export async function fetchProjectById(
         }))
       : undefined,
     enrollmentCount: Number(enrollmentCountRow[0]?.n ?? 0),
+    budget: ypfProject.budget != null ? Number(ypfProject.budget) : undefined,
+    targetVolunteers: ypfProject.targetVolunteers ?? undefined,
     chapter:
       ypfProject.chapterId && ypfProject.chapterName
         ? {
@@ -312,9 +320,11 @@ export async function fetchProjectById(
 export async function createProject(
   data: z.infer<typeof CreateProjectSchema>,
 ): Promise<string> {
+  // `budget` is a numeric column — Drizzle expects it as a string.
+  const { budget, ...rest } = data;
   const [project] = await dbClient.db
     .insert(Projects)
-    .values(data)
+    .values({ ...rest, ...(budget != null ? { budget: String(budget) } : {}) })
     .returning({ id: Projects.id });
 
   if (!project) {
@@ -328,13 +338,25 @@ export async function updateProject(
   projectId: string,
   data: z.infer<typeof UpdateProjectSchema>,
 ): Promise<void> {
+  const { budget, ...rest } = data;
   const [updatedProject] = await dbClient.db
     .update(Projects)
-    .set(data)
+    .set({ ...rest, ...(budget != null ? { budget: String(budget) } : {}) })
     .where(eq(Projects.id, projectId))
     .returning({ id: Projects.id });
 
   if (!updatedProject) {
+    throw new ApiError("Project not found", 404);
+  }
+}
+
+export async function deleteProject(projectId: string): Promise<void> {
+  const [deletedProject] = await dbClient.db
+    .delete(Projects)
+    .where(eq(Projects.id, projectId))
+    .returning({ id: Projects.id });
+
+  if (!deletedProject) {
     throw new ApiError("Project not found", 404);
   }
 }

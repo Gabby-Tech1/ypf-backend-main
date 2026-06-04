@@ -15,6 +15,8 @@ export type YPFProject = {
   featuredMediumUrl?: string;
   enrollmentCount: number;
   chapterName?: string;
+  budget?: number;
+  targetVolunteers?: number;
 };
 
 export type YPFProjectDetail = {
@@ -36,6 +38,8 @@ export type YPFProjectDetail = {
     medium: Medium;
   }[];
   enrollmentCount: number;
+  budget?: number;
+  targetVolunteers?: number;
   chapter?: {
     id: string;
     name: string;
