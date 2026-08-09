@@ -66,28 +66,15 @@ export async function createMembershipApplication({
   files: {
     passportPhoto: Express.Multer.File;
     resume: Express.Multer.File | null;
-    nationalId: Express.Multer.File;
+    nationalId: Express.Multer.File | null;
   };
 }): Promise<ApiResponse<string>> {
-  const existingUser = await dbClient.db.query.Constituents.findFirst({
-    where: or(
-      eq(schema.Constituents.email, data.applicantData.email),
-      eq(schema.Constituents.phone, data.applicantData.phone),
-      data.applicantData.whatsapp
-        ? eq(schema.Constituents.whatsapp, data.applicantData.whatsapp)
-        : undefined,
-    ),
-    columns: { id: true, email: true, phone: true, whatsapp: true },
+  // Runs before the uploads so an ineligible applicant doesn't leave orphan
+  // blobs behind. Being an existing constituent is fine — only an active
+  // membership or an application already in review stops them here.
+  await applicationsService.assertCanApplyForMembership({
+    email: data.applicantData.email,
   });
-
-  if (existingUser) {
-    if (existingUser.email === data.applicantData.email)
-      throw new ApiError("Email already exists", 400);
-    if (existingUser.phone === data.applicantData.phone)
-      throw new ApiError("Phone already exists", 400);
-    if (existingUser.whatsapp === data.applicantData.whatsapp)
-      throw new ApiError("WhatsApp already exists", 400);
-  }
 
   const [passportPhoto, resume, nationalId] = await Promise.all([
     fileUtils
@@ -98,9 +85,11 @@ export async function createMembershipApplication({
           .storeDocumentFile(files.resume)
           .then(documentsService.uploadDocument)
       : null,
-    fileUtils
-      .storeDocumentFile(files.nationalId)
-      .then(documentsService.uploadDocument),
+    files.nationalId
+      ? fileUtils
+          .storeDocumentFile(files.nationalId)
+          .then(documentsService.uploadDocument)
+      : null,
   ]);
 
   let { applicantData, ...applicationData } = data;
@@ -110,7 +99,7 @@ export async function createMembershipApplication({
     constituent: {
       ...applicantData,
       profilePhotoId: passportPhoto.id,
-      nationalIdDocumentId: nationalId.id,
+      nationalIdDocumentId: nationalId?.id,
     },
     cvDocumentId: resume?.id,
     willingToServe: applicationData.willingToServe,

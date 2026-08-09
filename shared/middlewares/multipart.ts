@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import { DocumentTypeEnum, MediumTypeEnum } from "@/db/schema/core";
+import { ApiError } from "@/shared/types";
 
 const tempDir = path.join(process.cwd(), "temp");
 if (!fs.existsSync(tempDir)) {
@@ -20,6 +21,24 @@ const storage = multer.diskStorage({
   },
 });
 
+/**
+ * A rejected upload is the applicant's mistake, not a server fault. Throwing a
+ * bare Error here meant multer handed the error handler something it couldn't
+ * classify, and the public registration form showed "An unexpected error
+ * occurred" (500) for something as ordinary as a HEIC photo. ApiError carries
+ * the status and a message the user can act on.
+ */
+export class UnsupportedFileTypeError extends ApiError {
+  constructor(fieldName: string, mimetype: string, allowed: string[]) {
+    super(
+      `Unsupported file type for "${fieldName}"${
+        mimetype ? ` (${mimetype})` : ""
+      }. Allowed formats: ${allowed.join(", ")}.`,
+      400,
+    );
+  }
+}
+
 export const AllowedMediaMimeTypes = {
   "image/png": "PICTURE",
   "image/jpeg": "PICTURE",
@@ -35,7 +54,15 @@ const mediaUpload = multer({
     if (AllowedMediaMimeTypes[file.mimetype]) {
       cb(null, true);
     } else {
-      cb(new Error("Invalid file type"));
+      cb(
+        new UnsupportedFileTypeError(file.fieldname, file.mimetype, [
+          "PNG",
+          "JPG",
+          "MP4",
+          "MOV",
+          "AVI",
+        ]),
+      );
     }
   },
 });
@@ -51,6 +78,9 @@ export const AllowedDocumentsMimeTypes: Record<
   "image/png": "IMAGE",
   "image/jpeg": "IMAGE",
   "image/jpg": "IMAGE",
+  // Phones and screenshot tools hand out WebP by default now. sharp reads it,
+  // so there's no reason to bounce a headshot for it.
+  "image/webp": "IMAGE",
   "application/vnd.ms-excel": "SPREADSHEET",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
     "SPREADSHEET",
@@ -66,7 +96,33 @@ export const documentsUpload = multer({
     if (Object.keys(AllowedDocumentsMimeTypes).includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error("Invalid document file type"));
+      cb(
+        new UnsupportedFileTypeError(file.fieldname, file.mimetype, [
+          "PDF",
+          "DOC",
+          "DOCX",
+          "PNG",
+          "JPG",
+          "WEBP",
+        ]),
+      );
+    }
+  },
+});
+
+/**
+ * Annual report PDFs run well past the 10 MB ceiling on `documentsUpload` —
+ * a print-quality report with photography is routinely 20–40 MB. Same disk
+ * storage, PDF only, higher limit.
+ */
+export const reportsUpload = multer({
+  storage: storage,
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (req, file, cb: multer.FileFilterCallback) => {
+    if (file.mimetype === "application/pdf") {
+      cb(null, true);
+    } else {
+      cb(new UnsupportedFileTypeError(file.fieldname, file.mimetype, ["PDF"]));
     }
   },
 });
@@ -74,6 +130,7 @@ export const documentsUpload = multer({
 const filesUpload = {
   mediaUpload,
   documentsUpload,
+  reportsUpload,
 };
 
 export default filesUpload;
